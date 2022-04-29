@@ -1,0 +1,105 @@
+CREATE OR REPLACE VIEW XX_API_EVENTS_ISALES_V AS
+with
+
+xxsrm as
+ (select shipment_gid, avto, avto_type, dov, seal_code, seal_number, seal_own, train_num, keu_16
+    from (select shipment_gid, shipment_refnum_qual_gid, shipment_refnum_value
+            from glogowner.shipment_refnum
+          --WHERE shipment_gid IN (SELECT shipment_gid FROM ie)
+          )
+  PIVOT(max(shipment_refnum_value)
+     for shipment_refnum_qual_gid in('НОМЕР_АВТОМОБИЛЯ' as avto,
+                                    'МАРКА_АВТОМОБИЛЯ' as avto_type,
+                                    'НОМЕР_ДОВЕРЕННОСТИ' as dov,
+                                    'ЗПУ_КОД' as seal_code,
+                                    'ЗПУ_НОМЕР' as seal_number,
+                                    'ЗПУ_ПРИНАДЛЕЖНОСТЬ' as seal_own,
+                                    'НОМЕР_СОСТАВА' as train_num,
+                                    'НАРЯД ФОРМЫ КЭУ-16' as keu_16)))
+
+select ie.i_transaction_no,
+       ie.eventdate,
+       bssc.bs_status_code_gid as status_code,
+       bssc.description as status_description,
+       nvl(ord.attribute_number9, ie.attribute_number9) as order_number,
+       ie.attribute12 as container_number,
+       ie.attribute10 as vagon_number,
+       ie.attribute16 as event_location_gid,
+       ie.attribute7 as event_location,
+       sh.transport_mode_gid as transport_mode,
+       nvl(ie.attribute3, NVL2(xxsrm.keu_16, 'НАРЯД ФОРМЫ КЭУ-16', null)) as doc_type,
+       nvl(ie.attribute1, xxsrm.keu_16) as doc_num,
+       cast(null as date) DOC_DATE,
+       xxsrm.avto as track_number,
+       null as event_group,
+       om.original_leg_position as position,
+       eq.s_equipment_gid,
+       eq.or_equipment_seq,
+       ves.vessel_name,
+       voy.voyage_name,
+       xxsrm.train_num as train_number,
+       ie.attribute13 as train_index,
+       sh.shipment_gid as shipment_id,
+       ss.status_value_gid as shipment_status,
+       ss.update_date as shipment_datetime_status,
+       'isales' direction_id
+
+  from glogowner.ie_shipmentstatus ie,
+       glogowner.order_release ord,
+       glogowner.shipment sh,
+       glogowner.shipment_status ss,
+       glogowner.order_movement om,
+       glogowner.bs_status_code bssc,
+       glogowner.voyage voy,
+       glogowner.vessel ves,
+       glogowner.order_release_refnum orr2,
+       xxsrm,
+       (select ssul.order_release_gid,
+               ssej.shipment_gid,
+               ssej.s_equipment_gid s_equipment_gid,
+               NVL(se.or_equipment_seq, 0) or_equipment_seq
+          from glogowner.s_equipment                  se,
+               glogowner.shipment_s_equipment_join    ssej,
+               glogowner.s_equipment_s_ship_unit_join sessuj,
+               glogowner.s_ship_unit_line             ssul
+         where 1 = 1
+               and se.s_equipment_gid = ssej.s_equipment_gid
+               and ssej.s_equipment_gid = sessuj.s_equipment_gid
+               and sessuj.s_ship_unit_gid = ssul.s_ship_unit_gid
+               and ssul.s_ship_unit_line_no = 1) eq
+ where 1 = 1
+      ---
+       and ord.order_release_gid = ie.order_release_gid
+      ---
+       and sh.shipment_gid(+) = ie.shipment_gid
+      ---
+       and ss.shipment_gid = sh.shipment_gid
+       and ss.status_type_gid = 'TRCONT.ENROUTE'
+      ---
+       and om.shipment_gid = sh.shipment_gid
+      ---
+       and bssc.bs_status_code_gid = ie.status_code_gid
+      ---
+       and voy.voyage_gid(+) = sh.voyage_gid
+      ---
+       and ves.vessel_gid(+) = sh.vessel_gid
+      ---
+       and orr2.order_release_gid = ie.order_release_gid
+       and orr2.order_release_refnum_qual_gid = 'ВИД_ОТПРАВКИ'
+       and (orr2.order_release_refnum_value, ie.status_code_gid) in
+       (select case
+                      when eg.bs_event_group_gid in ('TRCONT.XX_WAGON_EVENTS') then
+                       'ПОВАГОННАЯ'
+                      when eg.bs_event_group_gid in ('TRCONT.XX_ISALES') then
+                       'КОНТЕЙНЕРНАЯ'
+                      else
+                       null
+                   end,
+                   eg.bs_status_code_gid
+              from glogowner.bs_event_group_classify eg)
+      ---
+       and xxsrm.shipment_gid(+) = sh.shipment_gid
+      ---
+       and eq.order_release_gid(+) = ie.order_release_gid
+       and eq.shipment_gid(+) = ie.shipment_gid
+;
